@@ -28,7 +28,7 @@ function broadcast(roomCode, data) {
 
 function roomPlayerList(room) {
   const arr = [];
-  for (const [client, info] of room.players.entries()) {
+  for (const [, info] of room.players.entries()) {
     arr.push({ uid: info.uid, nick: info.nick });
   }
   return arr;
@@ -64,7 +64,7 @@ wss.on("connection", (ws) => {
       const roomCode = String(msg.room_code || "").trim();
       const password = String(msg.password || "");
       const nick = String(msg.nick || "").trim();
-      const uid = String(msg.uid || nick || "").trim();
+      const uid = String(msg.uid || "").trim();
 
       if (!roomCode || !nick || !uid) {
         send(ws, { type: "error", message: "Dados inválidos" });
@@ -103,7 +103,7 @@ wss.on("connection", (ws) => {
       const roomCode = String(msg.room_code || "").trim();
       const password = String(msg.password || "");
       const nick = String(msg.nick || "").trim();
-      const uid = String(msg.uid || nick || "").trim();
+      const uid = String(msg.uid || "").trim();
 
       const room = rooms.get(roomCode);
       if (!room) {
