@@ -9,7 +9,6 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocket.Server({ server });
-
 const rooms = new Map();
 
 function send(ws, data) {
@@ -29,8 +28,8 @@ function broadcast(roomCode, data) {
 
 function roomPlayerList(room) {
   const arr = [];
-  for (const [, info] of room.players.entries()) {
-    arr.push({ nick: info.nick });
+  for (const [client, info] of room.players.entries()) {
+    arr.push({ uid: info.uid, nick: info.nick });
   }
   return arr;
 }
@@ -38,6 +37,7 @@ function roomPlayerList(room) {
 function cleanupEmptyRoom(roomCode) {
   const room = rooms.get(roomCode);
   if (!room) return;
+
   if (room.players.size === 0) {
     rooms.delete(roomCode);
     console.log("Sala deletada:", roomCode);
@@ -46,6 +46,7 @@ function cleanupEmptyRoom(roomCode) {
 
 wss.on("connection", (ws) => {
   ws.roomCode = null;
+  ws.uid = null;
   ws.nick = null;
 
   send(ws, { type: "connected" });
@@ -63,8 +64,9 @@ wss.on("connection", (ws) => {
       const roomCode = String(msg.room_code || "").trim();
       const password = String(msg.password || "");
       const nick = String(msg.nick || "").trim();
+      const uid = String(msg.uid || nick || "").trim();
 
-      if (!roomCode || !nick) {
+      if (!roomCode || !nick || !uid) {
         send(ws, { type: "error", message: "Dados inválidos" });
         return;
       }
@@ -80,10 +82,11 @@ wss.on("connection", (ws) => {
         players: new Map()
       };
 
-      room.players.set(ws, { nick });
+      room.players.set(ws, { uid, nick });
       rooms.set(roomCode, room);
 
       ws.roomCode = roomCode;
+      ws.uid = uid;
       ws.nick = nick;
 
       send(ws, {
@@ -92,6 +95,7 @@ wss.on("connection", (ws) => {
         players: roomPlayerList(room),
         is_host: true
       });
+
       return;
     }
 
@@ -99,6 +103,7 @@ wss.on("connection", (ws) => {
       const roomCode = String(msg.room_code || "").trim();
       const password = String(msg.password || "");
       const nick = String(msg.nick || "").trim();
+      const uid = String(msg.uid || nick || "").trim();
 
       const room = rooms.get(roomCode);
       if (!room) {
@@ -111,8 +116,9 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      room.players.set(ws, { nick });
+      room.players.set(ws, { uid, nick });
       ws.roomCode = roomCode;
+      ws.uid = uid;
       ws.nick = nick;
 
       send(ws, {
@@ -126,6 +132,7 @@ wss.on("connection", (ws) => {
         type: "players_updated",
         players: roomPlayerList(room)
       });
+
       return;
     }
 
@@ -136,6 +143,7 @@ wss.on("connection", (ws) => {
       if (!room) return;
 
       const oldRoom = ws.roomCode;
+      const oldUid = ws.uid;
 
       room.players.delete(ws);
 
@@ -145,9 +153,15 @@ wss.on("connection", (ws) => {
       }
 
       ws.roomCode = null;
+      ws.uid = null;
       ws.nick = null;
 
       if (room.players.size > 0) {
+        broadcast(oldRoom, {
+          type: "player_left",
+          uid: oldUid
+        });
+
         broadcast(oldRoom, {
           type: "players_updated",
           players: roomPlayerList(room)
@@ -175,9 +189,11 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    if (msg.type === "car_state") {
+    if (msg.type === "player_move") {
       const roomCode = String(msg.room_code || "").trim();
-      const state = msg.state || {};
+      const uid = String(msg.uid || "").trim();
+      const pos = msg.pos || {};
+      const rot = msg.rot || {};
 
       const room = rooms.get(roomCode);
       if (!room) return;
@@ -185,8 +201,10 @@ wss.on("connection", (ws) => {
       for (const client of room.players.keys()) {
         if (client !== ws) {
           send(client, {
-            type: "car_state",
-            state
+            type: "player_move",
+            uid,
+            pos,
+            rot
           });
         }
       }
@@ -200,6 +218,7 @@ wss.on("connection", (ws) => {
     if (!room) return;
 
     const oldRoom = ws.roomCode;
+    const oldUid = ws.uid;
 
     room.players.delete(ws);
 
@@ -209,6 +228,11 @@ wss.on("connection", (ws) => {
     }
 
     if (room.players.size > 0) {
+      broadcast(oldRoom, {
+        type: "player_left",
+        uid: oldUid
+      });
+
       broadcast(oldRoom, {
         type: "players_updated",
         players: roomPlayerList(room)
