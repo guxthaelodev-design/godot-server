@@ -38,7 +38,6 @@ function roomPlayerList(room) {
 function cleanupEmptyRoom(roomCode) {
   const room = rooms.get(roomCode);
   if (!room) return;
-
   if (room.players.size === 0) {
     rooms.delete(roomCode);
     console.log("Sala deletada:", roomCode);
@@ -46,8 +45,6 @@ function cleanupEmptyRoom(roomCode) {
 }
 
 wss.on("connection", (ws) => {
-  console.log("Cliente conectado");
-
   ws.roomCode = null;
   ws.nick = null;
 
@@ -57,7 +54,7 @@ wss.on("connection", (ws) => {
     let msg;
     try {
       msg = JSON.parse(raw.toString());
-    } catch (e) {
+    } catch {
       send(ws, { type: "error", message: "JSON inválido" });
       return;
     }
@@ -79,6 +76,7 @@ wss.on("connection", (ws) => {
 
       const room = {
         password,
+        host: ws,
         players: new Map()
       };
 
@@ -94,8 +92,6 @@ wss.on("connection", (ws) => {
         players: roomPlayerList(room),
         is_host: true
       });
-
-      console.log("Sala criada:", roomCode, "Host:", nick);
       return;
     }
 
@@ -130,8 +126,6 @@ wss.on("connection", (ws) => {
         type: "players_updated",
         players: roomPlayerList(room)
       });
-
-      console.log("Entrou na sala:", roomCode, nick);
       return;
     }
 
@@ -144,6 +138,12 @@ wss.on("connection", (ws) => {
       const oldRoom = ws.roomCode;
 
       room.players.delete(ws);
+
+      if (room.host === ws) {
+        const nextHost = room.players.keys().next().value || null;
+        room.host = nextHost;
+      }
+
       ws.roomCode = null;
       ws.nick = null;
 
@@ -158,11 +158,42 @@ wss.on("connection", (ws) => {
       send(ws, { type: "left_room" });
       return;
     }
+
+    if (msg.type === "start_game") {
+      const roomCode = String(msg.room_code || "").trim();
+      const room = rooms.get(roomCode);
+      if (!room) return;
+
+      if (room.host !== ws) {
+        send(ws, { type: "error", message: "Só o host inicia" });
+        return;
+      }
+
+      broadcast(roomCode, {
+        type: "game_started"
+      });
+      return;
+    }
+
+    if (msg.type === "car_state") {
+      const roomCode = String(msg.room_code || "").trim();
+      const state = msg.state || {};
+
+      const room = rooms.get(roomCode);
+      if (!room) return;
+
+      for (const client of room.players.keys()) {
+        if (client !== ws) {
+          send(client, {
+            type: "car_state",
+            state
+          });
+        }
+      }
+    }
   });
 
   ws.on("close", () => {
-    console.log("Cliente desconectado");
-
     if (!ws.roomCode) return;
 
     const room = rooms.get(ws.roomCode);
@@ -171,6 +202,11 @@ wss.on("connection", (ws) => {
     const oldRoom = ws.roomCode;
 
     room.players.delete(ws);
+
+    if (room.host === ws) {
+      const nextHost = room.players.keys().next().value || null;
+      room.host = nextHost;
+    }
 
     if (room.players.size > 0) {
       broadcast(oldRoom, {
