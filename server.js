@@ -1,248 +1,188 @@
-const http = require("http");
 const WebSocket = require("ws");
 
-const PORT = process.env.PORT || 3000;
+const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
 
-const server = http.createServer((req, res) => {
-  res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Servidor online");
-});
-
-const wss = new WebSocket.Server({ server });
-const rooms = new Map();
+let rooms = {}; 
+// rooms = {
+//   room_code: {
+//     host: ws,
+//     players: [{ uid, nick, ws }]
+//   }
+// }
 
 function send(ws, data) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(data));
-  }
+	if (ws.readyState === WebSocket.OPEN) {
+		ws.send(JSON.stringify(data));
+	}
 }
 
-function broadcast(roomCode, data) {
-  const room = rooms.get(roomCode);
-  if (!room) return;
-
-  for (const client of room.players.keys()) {
-    send(client, data);
-  }
-}
-
-function roomPlayerList(room) {
-  const arr = [];
-  for (const [, info] of room.players.entries()) {
-    arr.push({ uid: info.uid, nick: info.nick });
-  }
-  return arr;
-}
-
-function cleanupEmptyRoom(roomCode) {
-  const room = rooms.get(roomCode);
-  if (!room) return;
-
-  if (room.players.size === 0) {
-    rooms.delete(roomCode);
-    console.log("Sala deletada:", roomCode);
-  }
+function broadcast(room, data, except_ws = null) {
+	room.players.forEach(p => {
+		if (p.ws !== except_ws) {
+			send(p.ws, data);
+		}
+	});
 }
 
 wss.on("connection", (ws) => {
-  ws.roomCode = null;
-  ws.uid = null;
-  ws.nick = null;
+	console.log("Novo cliente conectado");
 
-  send(ws, { type: "connected" });
+	ws.on("message", (message) => {
+		let data;
+		try {
+			data = JSON.parse(message);
+		} catch (e) {
+			return;
+		}
 
-  ws.on("message", (raw) => {
-    let msg;
-    try {
-      msg = JSON.parse(raw.toString());
-    } catch {
-      send(ws, { type: "error", message: "JSON inválido" });
-      return;
-    }
+		const type = data.type;
 
-    if (msg.type === "create_room") {
-      const roomCode = String(msg.room_code || "").trim();
-      const password = String(msg.password || "");
-      const nick = String(msg.nick || "").trim();
-      const uid = String(msg.uid || "").trim();
+		// =========================
+		// CREATE ROOM
+		// =========================
+		if (type === "create_room") {
+			const { room_code, uid, nick } = data;
 
-      if (!roomCode || !nick || !uid) {
-        send(ws, { type: "error", message: "Dados inválidos" });
-        return;
-      }
+			rooms[room_code] = {
+				host: ws,
+				players: [{ uid, nick, ws }]
+			};
 
-      if (rooms.has(roomCode)) {
-        send(ws, { type: "error", message: "Sala já existe" });
-        return;
-      }
+			ws.room_code = room_code;
+			ws.uid = uid;
 
-      const room = {
-        password,
-        host: ws,
-        players: new Map()
-      };
+			send(ws, {
+				type: "room_joined",
+				room_code,
+				players: rooms[room_code].players.map(p => ({
+					uid: p.uid,
+					nick: p.nick
+				})),
+				is_host: true
+			});
 
-      room.players.set(ws, { uid, nick });
-      rooms.set(roomCode, room);
+			console.log("Sala criada:", room_code);
+		}
 
-      ws.roomCode = roomCode;
-      ws.uid = uid;
-      ws.nick = nick;
+		// =========================
+		// JOIN ROOM
+		// =========================
+		if (type === "join_room") {
+			const { room_code, uid, nick } = data;
 
-      send(ws, {
-        type: "room_joined",
-        room_code: roomCode,
-        players: roomPlayerList(room),
-        is_host: true
-      });
+			if (!rooms[room_code]) {
+				send(ws, { type: "error", message: "Sala não existe" });
+				return;
+			}
 
-      return;
-    }
+			const room = rooms[room_code];
 
-    if (msg.type === "join_room") {
-      const roomCode = String(msg.room_code || "").trim();
-      const password = String(msg.password || "");
-      const nick = String(msg.nick || "").trim();
-      const uid = String(msg.uid || "").trim();
+			room.players.push({ uid, nick, ws });
 
-      const room = rooms.get(roomCode);
-      if (!room) {
-        send(ws, { type: "error", message: "Sala não existe" });
-        return;
-      }
+			ws.room_code = room_code;
+			ws.uid = uid;
 
-      if (room.password !== password) {
-        send(ws, { type: "error", message: "Senha incorreta" });
-        return;
-      }
+			// responde pro player que entrou
+			send(ws, {
+				type: "room_joined",
+				room_code,
+				players: room.players.map(p => ({
+					uid: p.uid,
+					nick: p.nick
+				})),
+				is_host: false
+			});
 
-      room.players.set(ws, { uid, nick });
-      ws.roomCode = roomCode;
-      ws.uid = uid;
-      ws.nick = nick;
+			// atualiza todos
+			broadcast(room, {
+				type: "players_updated",
+				players: room.players.map(p => ({
+					uid: p.uid,
+					nick: p.nick
+				}))
+			});
 
-      send(ws, {
-        type: "room_joined",
-        room_code: roomCode,
-        players: roomPlayerList(room),
-        is_host: false
-      });
+			console.log("Entrou na sala:", room_code);
+		}
 
-      broadcast(roomCode, {
-        type: "players_updated",
-        players: roomPlayerList(room)
-      });
+		// =========================
+		// START GAME
+		// =========================
+		if (type === "start_game") {
+			const { room_code } = data;
 
-      return;
-    }
+			const room = rooms[room_code];
+			if (!room) return;
 
-    if (msg.type === "leave_room") {
-      if (!ws.roomCode) return;
+			broadcast(room, { type: "game_started" });
 
-      const room = rooms.get(ws.roomCode);
-      if (!room) return;
+			console.log("Jogo iniciado:", room_code);
+		}
 
-      const oldRoom = ws.roomCode;
-      const oldUid = ws.uid;
+		// =========================
+		// INPUT → HOST
+		// =========================
+		if (type === "player_input") {
+			const { room_code } = data;
+			const room = rooms[room_code];
+			if (!room) return;
 
-      room.players.delete(ws);
+			// manda só pro host
+			send(room.host, data);
+		}
 
-      if (room.host === ws) {
-        const nextHost = room.players.keys().next().value || null;
-        room.host = nextHost;
-      }
+		// =========================
+		// WORLD STATE → CLIENTES
+		// =========================
+		if (type === "world_state") {
+			const { room_code } = data;
+			const room = rooms[room_code];
+			if (!room) return;
 
-      ws.roomCode = null;
-      ws.uid = null;
-      ws.nick = null;
+			// host manda pra todos menos ele
+			broadcast(room, data, room.host);
+		}
 
-      if (room.players.size > 0) {
-        broadcast(oldRoom, {
-          type: "player_left",
-          uid: oldUid
-        });
+		// =========================
+		// LEAVE ROOM
+		// =========================
+		if (type === "leave_room") {
+			handleDisconnect(ws);
+		}
+	});
 
-        broadcast(oldRoom, {
-          type: "players_updated",
-          players: roomPlayerList(room)
-        });
-      }
+	ws.on("close", () => {
+		handleDisconnect(ws);
+	});
 
-      cleanupEmptyRoom(oldRoom);
-      send(ws, { type: "left_room" });
-      return;
-    }
+	function handleDisconnect(ws) {
+		const room_code = ws.room_code;
+		if (!room_code || !rooms[room_code]) return;
 
-    if (msg.type === "start_game") {
-      const roomCode = String(msg.room_code || "").trim();
-      const room = rooms.get(roomCode);
-      if (!room) return;
+		const room = rooms[room_code];
 
-      if (room.host !== ws) {
-        send(ws, { type: "error", message: "Só o host inicia" });
-        return;
-      }
+		// remove player
+		room.players = room.players.filter(p => p.ws !== ws);
 
-      broadcast(roomCode, {
-        type: "game_started"
-      });
-      return;
-    }
+		// se era host → fecha sala
+		if (room.host === ws) {
+			room.players.forEach(p => {
+				send(p.ws, { type: "left_room" });
+			});
 
-    if (msg.type === "player_move") {
-      const roomCode = String(msg.room_code || "").trim();
-      const uid = String(msg.uid || "").trim();
-      const pos = msg.pos || {};
-      const rot = msg.rot || {};
+			delete rooms[room_code];
+			console.log("Sala fechada:", room_code);
+			return;
+		}
 
-      const room = rooms.get(roomCode);
-      if (!room) return;
+		// atualiza lista
+		broadcast(room, {
+			type: "player_left",
+			uid: ws.uid
+		});
 
-      for (const client of room.players.keys()) {
-        if (client !== ws) {
-          send(client, {
-            type: "player_move",
-            uid,
-            pos,
-            rot
-          });
-        }
-      }
-    }
-  });
-
-  ws.on("close", () => {
-    if (!ws.roomCode) return;
-
-    const room = rooms.get(ws.roomCode);
-    if (!room) return;
-
-    const oldRoom = ws.roomCode;
-    const oldUid = ws.uid;
-
-    room.players.delete(ws);
-
-    if (room.host === ws) {
-      const nextHost = room.players.keys().next().value || null;
-      room.host = nextHost;
-    }
-
-    if (room.players.size > 0) {
-      broadcast(oldRoom, {
-        type: "player_left",
-        uid: oldUid
-      });
-
-      broadcast(oldRoom, {
-        type: "players_updated",
-        players: roomPlayerList(room)
-      });
-    }
-
-    cleanupEmptyRoom(oldRoom);
-  });
+		console.log("Player saiu:", ws.uid);
+	}
 });
 
-server.listen(PORT, () => {
-  console.log("Servidor rodando na porta", PORT);
-});
+console.log("Servidor rodando...");
