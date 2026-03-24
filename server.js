@@ -2,7 +2,7 @@ const WebSocket = require("ws");
 
 const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
 
-let rooms = {}; 
+let rooms = {};
 // rooms = {
 //   room_code: {
 //     host: ws,
@@ -37,9 +37,6 @@ wss.on("connection", (ws) => {
 
 		const type = data.type;
 
-		// =========================
-		// CREATE ROOM
-		// =========================
 		if (type === "create_room") {
 			const { room_code, uid, nick } = data;
 
@@ -64,9 +61,6 @@ wss.on("connection", (ws) => {
 			console.log("Sala criada:", room_code);
 		}
 
-		// =========================
-		// JOIN ROOM
-		// =========================
 		if (type === "join_room") {
 			const { room_code, uid, nick } = data;
 
@@ -82,7 +76,6 @@ wss.on("connection", (ws) => {
 			ws.room_code = room_code;
 			ws.uid = uid;
 
-			// responde pro player que entrou
 			send(ws, {
 				type: "room_joined",
 				room_code,
@@ -93,7 +86,6 @@ wss.on("connection", (ws) => {
 				is_host: false
 			});
 
-			// atualiza todos
 			broadcast(room, {
 				type: "players_updated",
 				players: room.players.map(p => ({
@@ -105,12 +97,8 @@ wss.on("connection", (ws) => {
 			console.log("Entrou na sala:", room_code);
 		}
 
-		// =========================
-		// START GAME
-		// =========================
 		if (type === "start_game") {
 			const { room_code } = data;
-
 			const room = rooms[room_code];
 			if (!room) return;
 
@@ -119,33 +107,22 @@ wss.on("connection", (ws) => {
 			console.log("Jogo iniciado:", room_code);
 		}
 
-		// =========================
-		// INPUT → HOST
-		// =========================
 		if (type === "player_input") {
 			const { room_code } = data;
 			const room = rooms[room_code];
 			if (!room) return;
 
-			// manda só pro host
 			send(room.host, data);
 		}
 
-		// =========================
-		// WORLD STATE → CLIENTES
-		// =========================
 		if (type === "world_state") {
 			const { room_code } = data;
 			const room = rooms[room_code];
 			if (!room) return;
 
-			// host manda pra todos menos ele
 			broadcast(room, data, room.host);
 		}
 
-		// =========================
-		// LEAVE ROOM
-		// =========================
 		if (type === "leave_room") {
 			handleDisconnect(ws);
 		}
@@ -161,10 +138,8 @@ wss.on("connection", (ws) => {
 
 		const room = rooms[room_code];
 
-		// remove player
 		room.players = room.players.filter(p => p.ws !== ws);
 
-		// se era host → fecha sala
 		if (room.host === ws) {
 			room.players.forEach(p => {
 				send(p.ws, { type: "left_room" });
@@ -175,7 +150,6 @@ wss.on("connection", (ws) => {
 			return;
 		}
 
-		// atualiza lista
 		broadcast(room, {
 			type: "player_left",
 			uid: ws.uid
