@@ -1,186 +1,168 @@
-const http = require("http");
 const WebSocket = require("ws");
-
-const PORT = process.env.PORT || 8080;
-
-const server = http.createServer((req, res) => {
-	res.writeHead(200, { "Content-Type": "text/plain" });
-	res.end("Servidor online");
-});
-
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ port: 3000 });
 
 let rooms = {};
 
-function send(ws, data) {
-	if (ws.readyState === WebSocket.OPEN) {
-		ws.send(JSON.stringify(data));
-	}
+function safeSend(ws, obj) {
+  try {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(obj));
+    }
+  } catch (_) {}
 }
 
-function playerList(room) {
-	return room.players.map((p, index) => ({
-		uid: p.uid,
-		nick: p.nick,
-		slot: index
-	}));
+function broadcast(room, obj, exceptWs = null) {
+  for (const [pws] of room.players) {
+    if (pws !== exceptWs) safeSend(pws, obj);
+  }
 }
 
-function broadcast(room, data, except_ws = null) {
-	room.players.forEach(p => {
-		if (p.ws !== except_ws) {
-			send(p.ws, data);
-		}
-	});
+function closeRoom(roomCode, reason = "host_left") {
+  const room = rooms[roomCode];
+  if (!room) return;
+
+  broadcast(room, { type: "room_closed", reason });
+
+  for (const [pws] of room.players) {
+    try { pws.close(); } catch (_) {}
+  }
+
+  delete rooms[roomCode];
 }
 
-wss.on("connection", (ws) => {
-	console.log("Novo cliente conectado");
+function getRoom(ws) {
+  if (!ws.room_code) return null;
+  return rooms[ws.room_code] || null;
+}
 
-	ws.on("message", (message) => {
-		let data;
-		try {
-			data = JSON.parse(message);
-		} catch (e) {
-			return;
-		}
+wss.on("connection", ws => {
+  ws.on("message", raw => {
+    let msg;
+    try { msg = JSON.parse(raw); }
+    catch { return safeSend(ws, { type: "error", code: "bad_json" }); }
 
-		const type = data.type;
+    const type = msg.type;
 
-		if (type === "create_room") {
-			const { room_code, uid, nick, password } = data;
+    // CREATE ROOM (host)
+    if (type === "create_room") {
+      const roomCode = String(msg.room_code || "").trim();
+      const uid = String(msg.uid || "").trim();
+      const nick = String(msg.nick || "").trim();
+      const car_index = Number(msg.car_index ?? 0);
 
-			if (rooms[room_code]) {
-				send(ws, { type: "error", message: "Sala já existe" });
-				return;
-			}
+      if (!roomCode || !uid) return safeSend(ws, { type: "error", code: "missing_room_or_uid" });
+      if (rooms[roomCode]) return safeSend(ws, { type: "error", code: "room_exists" });
 
-			rooms[room_code] = {
-				host: ws,
-				password: password || "",
-				players: [{ uid, nick, ws }]
-			};
+      rooms[roomCode] = {
+        host_uid: uid,
+        host_ws: ws,
+        players: new Map(), // ws -> { uid, nick, car_index }
+      };
 
-			ws.room_code = room_code;
-			ws.uid = uid;
+      rooms[roomCode].players.set(ws, { uid, nick, car_index });
 
-			send(ws, {
-				type: "room_joined",
-				room_code,
-				players: playerList(rooms[room_code]),
-				is_host: true
-			});
+      ws.room_code = roomCode;
+      ws.uid = uid;
 
-			console.log("Sala criada:", room_code);
-		}
+      safeSend(ws, { type: "room_joined", room_code: roomCode, is_host: true, host_uid: uid });
 
-		if (type === "join_room") {
-			const { room_code, uid, nick, password } = data;
+      safeSend(ws, {
+        type: "room_players",
+        host_uid: uid,
+        players: Array.from(rooms[roomCode].players.values())
+      });
 
-			if (!rooms[room_code]) {
-				send(ws, { type: "error", message: "Sala não existe" });
-				return;
-			}
+      return;
+    }
 
-			const room = rooms[room_code];
+    // JOIN ROOM (client)
+    if (type === "join_room") {
+      const roomCode = String(msg.room_code || "").trim();
+      const uid = String(msg.uid || "").trim();
+      const nick = String(msg.nick || "").trim();
+      const car_index = Number(msg.car_index ?? 0);
 
-			if ((room.password || "") !== (password || "")) {
-				send(ws, { type: "error", message: "Senha incorreta" });
-				return;
-			}
+      const room = rooms[roomCode];
+      if (!room) return safeSend(ws, { type: "error", code: "room_not_found" });
+      if (!uid) return safeSend(ws, { type: "error", code: "missing_uid" });
 
-			room.players.push({ uid, nick, ws });
+      for (const [, p] of room.players) {
+        if (p.uid === uid) return safeSend(ws, { type: "error", code: "uid_already_in_room" });
+      }
 
-			ws.room_code = room_code;
-			ws.uid = uid;
+      room.players.set(ws, { uid, nick, car_index });
+      ws.room_code = roomCode;
+      ws.uid = uid;
 
-			send(ws, {
-				type: "room_joined",
-				room_code,
-				players: playerList(room),
-				is_host: false
-			});
+      safeSend(ws, { type: "room_joined", room_code: roomCode, is_host: false, host_uid: room.host_uid });
 
-			broadcast(room, {
-				type: "players_updated",
-				players: playerList(room)
-			});
+      broadcast(room, { type: "player_joined", uid, nick, car_index }, ws);
 
-			console.log("Entrou na sala:", room_code);
-		}
+      safeSend(ws, {
+        type: "room_players",
+        host_uid: room.host_uid,
+        players: Array.from(room.players.values())
+      });
 
-		if (type === "start_game") {
-			const { room_code } = data;
-			const room = rooms[room_code];
-			if (!room) return;
+      return;
+    }
 
-			if (room.host !== ws) {
-				send(ws, { type: "error", message: "Só o host inicia" });
-				return;
-			}
+    const room = getRoom(ws);
+    if (!room) return safeSend(ws, { type: "error", code: "not_in_room" });
 
-			broadcast(room, { type: "game_started" });
+    // START GAME (somente host)
+    if (type === "start_game") {
+      if (ws !== room.host_ws) return safeSend(ws, { type: "error", code: "only_host_can_start" });
+      broadcast(room, { type: "game_started" });
+      return;
+    }
 
-			console.log("Jogo iniciado:", room_code);
-		}
+    // Repasse de movimento (igual seu sistema atual)
+    if (type === "player_move") {
+      const payload = {
+        type: "player_move",
+        uid: msg.uid,
+        pos: msg.pos,
+        rot_y: msg.rot_y,
+        car_index: msg.car_index ?? 0,
+      };
 
-		if (type === "player_input") {
-			const { room_code } = data;
-			const room = rooms[room_code];
-			if (!room) return;
+      broadcast(room, payload, ws);
+      return;
+    }
 
-			send(room.host, data);
-		}
+    // Repasse do bot (host envia, clientes só recebem)
+    if (type === "ai_move") {
+      if (ws !== room.host_ws) return; // segurança: só host pode mandar bot
+      broadcast(room, {
+        type: "ai_move",
+        bot_id: msg.bot_id,
+        pos: msg.pos,
+        rot_y: msg.rot_y
+      });
+      return;
+    }
 
-		if (type === "world_state") {
-			const { room_code } = data;
-			const room = rooms[room_code];
-			if (!room) return;
+    safeSend(ws, { type: "error", code: "unknown_type" });
+  });
 
-			broadcast(room, data, room.host);
-		}
+  ws.on("close", () => {
+    const roomCode = ws.room_code;
+    if (!roomCode) return;
 
-		if (type === "leave_room") {
-			handleDisconnect(ws);
-		}
-	});
+    const room = rooms[roomCode];
+    if (!room) return;
 
-	ws.on("close", () => {
-		handleDisconnect(ws);
-	});
+    room.players.delete(ws);
 
-	function handleDisconnect(socket) {
-		const room_code = socket.room_code;
-		if (!room_code || !rooms[room_code]) return;
+    // se era o host: fecha a sala e derruba geral
+    if (ws === room.host_ws) {
+      closeRoom(roomCode, "host_left");
+      return;
+    }
 
-		const room = rooms[room_code];
+    broadcast(room, { type: "player_left", uid: ws.uid });
 
-		room.players = room.players.filter(p => p.ws !== socket);
-
-		if (room.host === socket) {
-			room.players.forEach(p => {
-				send(p.ws, { type: "left_room" });
-			});
-
-			delete rooms[room_code];
-			console.log("Sala fechada:", room_code);
-			return;
-		}
-
-		broadcast(room, {
-			type: "player_left",
-			uid: socket.uid
-		});
-
-		broadcast(room, {
-			type: "players_updated",
-			players: playerList(room)
-		});
-
-		console.log("Player saiu:", socket.uid);
-	}
-});
-
-server.listen(PORT, () => {
-	console.log("Servidor rodando...");
+    if (room.players.size === 0) delete rooms[roomCode];
+  });
 });
