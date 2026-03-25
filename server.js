@@ -1,6 +1,17 @@
 const WebSocket = require("ws");
-const wss = new WebSocket.Server({ port: 3000 });
 
+const PORT = process.env.PORT || 3000;
+const wss = new WebSocket.Server({ port: PORT });
+
+console.log("✅ WebSocket server on port:", PORT);
+
+/**
+ * rooms[room_code] = {
+ *   host_uid: string,
+ *   host_ws: WebSocket,
+ *   players: Map<WebSocket, { uid: string, nick: string, car_index: number }>
+ * }
+ */
 let rooms = {};
 
 function safeSend(ws, obj) {
@@ -56,7 +67,7 @@ wss.on("connection", ws => {
       rooms[roomCode] = {
         host_uid: uid,
         host_ws: ws,
-        players: new Map(), // ws -> { uid, nick, car_index }
+        players: new Map(),
       };
 
       rooms[roomCode].players.set(ws, { uid, nick, car_index });
@@ -91,6 +102,7 @@ wss.on("connection", ws => {
       }
 
       room.players.set(ws, { uid, nick, car_index });
+
       ws.room_code = roomCode;
       ws.uid = uid;
 
@@ -117,23 +129,21 @@ wss.on("connection", ws => {
       return;
     }
 
-    // Repasse de movimento (igual seu sistema atual)
+    // player move (repasse)
     if (type === "player_move") {
-      const payload = {
+      broadcast(room, {
         type: "player_move",
         uid: msg.uid,
         pos: msg.pos,
         rot_y: msg.rot_y,
         car_index: msg.car_index ?? 0,
-      };
-
-      broadcast(room, payload, ws);
+      }, ws);
       return;
     }
 
-    // Repasse do bot (host envia, clientes só recebem)
+    // ai move (somente host)
     if (type === "ai_move") {
-      if (ws !== room.host_ws) return; // segurança: só host pode mandar bot
+      if (ws !== room.host_ws) return;
       broadcast(room, {
         type: "ai_move",
         bot_id: msg.bot_id,
