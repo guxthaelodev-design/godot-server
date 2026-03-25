@@ -1,19 +1,29 @@
+const http = require("http");
 const WebSocket = require("ws");
 
-const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
+const PORT = process.env.PORT || 8080;
+
+const server = http.createServer((req, res) => {
+	res.writeHead(200, { "Content-Type": "text/plain" });
+	res.end("Servidor online");
+});
+
+const wss = new WebSocket.Server({ server });
 
 let rooms = {};
-// rooms = {
-//   room_code: {
-//     host: ws,
-//     players: [{ uid, nick, ws }]
-//   }
-// }
 
 function send(ws, data) {
 	if (ws.readyState === WebSocket.OPEN) {
 		ws.send(JSON.stringify(data));
 	}
+}
+
+function playerList(room) {
+	return room.players.map((p, index) => ({
+		uid: p.uid,
+		nick: p.nick,
+		slot: index
+	}));
 }
 
 function broadcast(room, data, except_ws = null) {
@@ -38,10 +48,16 @@ wss.on("connection", (ws) => {
 		const type = data.type;
 
 		if (type === "create_room") {
-			const { room_code, uid, nick } = data;
+			const { room_code, uid, nick, password } = data;
+
+			if (rooms[room_code]) {
+				send(ws, { type: "error", message: "Sala já existe" });
+				return;
+			}
 
 			rooms[room_code] = {
 				host: ws,
+				password: password || "",
 				players: [{ uid, nick, ws }]
 			};
 
@@ -51,10 +67,7 @@ wss.on("connection", (ws) => {
 			send(ws, {
 				type: "room_joined",
 				room_code,
-				players: rooms[room_code].players.map(p => ({
-					uid: p.uid,
-					nick: p.nick
-				})),
+				players: playerList(rooms[room_code]),
 				is_host: true
 			});
 
@@ -62,7 +75,7 @@ wss.on("connection", (ws) => {
 		}
 
 		if (type === "join_room") {
-			const { room_code, uid, nick } = data;
+			const { room_code, uid, nick, password } = data;
 
 			if (!rooms[room_code]) {
 				send(ws, { type: "error", message: "Sala não existe" });
@@ -70,6 +83,11 @@ wss.on("connection", (ws) => {
 			}
 
 			const room = rooms[room_code];
+
+			if ((room.password || "") !== (password || "")) {
+				send(ws, { type: "error", message: "Senha incorreta" });
+				return;
+			}
 
 			room.players.push({ uid, nick, ws });
 
@@ -79,19 +97,13 @@ wss.on("connection", (ws) => {
 			send(ws, {
 				type: "room_joined",
 				room_code,
-				players: room.players.map(p => ({
-					uid: p.uid,
-					nick: p.nick
-				})),
+				players: playerList(room),
 				is_host: false
 			});
 
 			broadcast(room, {
 				type: "players_updated",
-				players: room.players.map(p => ({
-					uid: p.uid,
-					nick: p.nick
-				}))
+				players: playerList(room)
 			});
 
 			console.log("Entrou na sala:", room_code);
@@ -101,6 +113,11 @@ wss.on("connection", (ws) => {
 			const { room_code } = data;
 			const room = rooms[room_code];
 			if (!room) return;
+
+			if (room.host !== ws) {
+				send(ws, { type: "error", message: "Só o host inicia" });
+				return;
+			}
 
 			broadcast(room, { type: "game_started" });
 
@@ -132,15 +149,15 @@ wss.on("connection", (ws) => {
 		handleDisconnect(ws);
 	});
 
-	function handleDisconnect(ws) {
-		const room_code = ws.room_code;
+	function handleDisconnect(socket) {
+		const room_code = socket.room_code;
 		if (!room_code || !rooms[room_code]) return;
 
 		const room = rooms[room_code];
 
-		room.players = room.players.filter(p => p.ws !== ws);
+		room.players = room.players.filter(p => p.ws !== socket);
 
-		if (room.host === ws) {
+		if (room.host === socket) {
 			room.players.forEach(p => {
 				send(p.ws, { type: "left_room" });
 			});
@@ -152,11 +169,18 @@ wss.on("connection", (ws) => {
 
 		broadcast(room, {
 			type: "player_left",
-			uid: ws.uid
+			uid: socket.uid
 		});
 
-		console.log("Player saiu:", ws.uid);
+		broadcast(room, {
+			type: "players_updated",
+			players: playerList(room)
+		});
+
+		console.log("Player saiu:", socket.uid);
 	}
 });
 
-console.log("Servidor rodando...");
+server.listen(PORT, () => {
+	console.log("Servidor rodando...");
+});
