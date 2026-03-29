@@ -291,6 +291,64 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (type === "player_move") {
+      const roomCode = String(data.room_code || "").trim();
+      const uid = String(data.uid || "").trim();
+
+      if (!roomCode || !uid) {
+        send(ws, { type: "error", code: "missing_fields" });
+        return;
+      }
+
+      const room = rooms.get(roomCode);
+      if (!room) {
+        return;
+      }
+
+      if (!room.players.has(uid)) {
+        return;
+      }
+
+      broadcastRoom(room, {
+        type: "player_move",
+        room_code: roomCode,
+        uid,
+        pos: data.pos || {},
+        rot: data.rot || {},
+        car_index: Number(data.car_index || 0),
+      });
+      return;
+    }
+
+    if (type === "ai_state") {
+      const roomCode = String(data.room_code || "").trim();
+
+      if (!roomCode) {
+        send(ws, { type: "error", code: "missing_fields" });
+        return;
+      }
+
+      const room = rooms.get(roomCode);
+      if (!room) {
+        return;
+      }
+
+      if (room.hostUid !== ws.uid) {
+        return;
+      }
+
+      broadcastRoom(room, {
+        type: "ai_state",
+        room_code: roomCode,
+        bot_id: String(data.bot_id || ""),
+        pos: data.pos || {},
+        rot: data.rot || {},
+        lin: data.lin || {},
+        ang: data.ang || {},
+      });
+      return;
+    }
+
     send(ws, { type: "error", code: "unknown_type" });
   });
 
