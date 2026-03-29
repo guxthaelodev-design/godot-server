@@ -1,5 +1,5 @@
 {
-  "name": "godot-railway-server",
+  "name": "room-manager",
   "version": "1.0.0",
   "main": "server.js",
   "type": "commonjs",
@@ -7,6 +7,8 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "ws": "^8.18.0"
+    "express": "^4.19.2",
+    "firebase-admin": "^12.5.0",
+    "node-fetch": "^3.3.2"
   }
 }
